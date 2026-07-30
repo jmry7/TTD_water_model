@@ -1,0 +1,4 @@
+torch==2.13.0
+numpy==2.4.6
+scipy==1.17.1
+openmm[cuda13]==8.4.0
