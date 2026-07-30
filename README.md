@@ -22,5 +22,5 @@ The program has been tested with:
 - PyTorch 2.13.0 with CUDA 13.0 support
 - OpenMM 8.4
 - NumPy 2.4.6
-- Scipy 1.17.1
+- SciPy 1.17.1
 
