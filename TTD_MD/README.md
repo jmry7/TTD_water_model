@@ -25,7 +25,7 @@ The program has been tested with:
 - Python 3.11
 - OpenMM 8.4
 - NumPy 2.4.6
-- Scipy 1.17.1
+- SciPy 1.17.1
 
 A CUDA-compatible NVIDIA GPU is recommended. The program can also attempt to use OpenCL if CUDA is unavailable.
 
