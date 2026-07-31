@@ -20,7 +20,7 @@ Detailed requirements, input files, calculation procedures, and output files are
 
 The molecular-property calculations are implemented mainly with PyTorch, while the molecular dynamics simulations are performed with OpenMM.
 
-The programs has been tested with:
+The programs have been tested with:
 - Python 3.11
 - PyTorch 2.13.0 with CUDA 13.0 support
 - OpenMM 8.4
