@@ -237,7 +237,7 @@ checkpoint_interval = 10000
 
 dt = 0.4 * unit.femtoseconds # Time step: 0.4 fs
 total_steps = 3* 2500000  # Number of production steps (3 ns)
-equil_time = 100.0 * unit.picoseconds # Equilibration time (100.0 ps)
+equil_time = 1000.0 * unit.picoseconds # Equilibration time (1000.0 ps)
 equil_steps = int(equil_time / dt)   # Number of equilibration steps (250000 steps)
 report_steps = 10
 
