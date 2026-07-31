@@ -3,7 +3,7 @@ from openmm import CustomIntegrator
 import openmm.unit as unit
 
 
-def create_fortran_strict_nhc_scf_integrator(
+def create_nhc_scf_integrator(
         temperature,
         dof_core,
         scf_tol,
@@ -258,7 +258,7 @@ def setup_scf_drude_env(system, temperature, scf_tol, dt, ghost_mass=0.4 * unit.
         raise ValueError("No Drude particles were found in the system.")
     total_scf_tol = num_drudes * scf_tol
 
-    integrator = create_fortran_strict_nhc_scf_integrator(
+    integrator = create_nhc_scf_integrator(
         temperature=temperature,
         dof_core=dof_core,
         scf_tol=total_scf_tol,
