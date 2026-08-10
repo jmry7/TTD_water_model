@@ -38,6 +38,13 @@ FORCE_OUTPUT = SCRIPT_DIR / "torch_openmm_force.dat"
 TORCH_ENERGY_TO_KJ_MOL = 100.0
 TORCH_FORCE_TO_KJ_MOL_NM = 1000.0
 
+BOX_LENGTH_ANGSTROM = 300.0
+BOX_LENGTH_NM = BOX_LENGTH_ANGSTROM * 0.1
+NONBONDED_CUTOFF_NM = 0.9
+
+OPENMM_PLATFORM = "Reference"
+
+
 def read_force_field_parameters(filename: str | Path) -> dict[str, torch.Tensor]:
     numbers = re.findall(r"[-+]?\d*\.?\d+(?:[Ee][-+]?\d+)?", Path(filename).read_text(encoding="utf-8"))
     values = torch.tensor([float(value) for value in numbers], dtype=DTYPE, device=DEVICE)
@@ -111,88 +118,176 @@ def read_xyz(filename: str | Path) -> tuple[torch.Tensor, list[str]]:
 
 
 def optimize_with_torch(qa: torch.Tensor, params: dict[str, torch.Tensor]) -> torch.Tensor:
-    results = drude_wat.drude_wat(False, False, False, False, False, False, False, False, False, False,
-                                  qa, params["cd"], params["b"], params["ds"], params["poh"], params["phh"], params["phoh"], params["bk"])
+    results = drude_wat.drude_wat(False, False, False, False, False, False, False, False, False, False, qa, params["cd"], params["b"], params["ds"], params["poh"], params["phh"], params["phoh"], params["bk"])
     return results["dposition"]
+
 
 def calculate_with_torch(qa: torch.Tensor, coordinates: torch.Tensor, params: dict[str, torch.Tensor]) -> tuple[torch.Tensor, torch.Tensor]:
     lst, lb, ld, lcc, lcd, ldd, lbk, _, _, chg, pst, pb, pd, pbk, extfld, extfg = ttd_init.init(qa, params["cd"], params["ds"], params["poh"], params["phh"], params["phoh"], params["bk"])
     energy, force, _ = ttd_engfor.engfor(True, False, lst, lb, ld, lcc, lcd, ldd, lbk, coordinates, chg, params["b"], pst, pb, pd, pbk, extfld, extfg)
+
     return energy * TORCH_ENERGY_TO_KJ_MOL, force * TORCH_FORCE_TO_KJ_MOL_NM
 
-# Turn off the periodic nonbonded methods.
+
+def make_box_vectors() -> tuple[unit.Quantity, unit.Quantity, unit.Quantity]:
+    a = openmm.Vec3(BOX_LENGTH_NM, 0.0, 0.0) * unit.nanometer
+    b = openmm.Vec3(0.0, BOX_LENGTH_NM, 0.0) * unit.nanometer
+    c = openmm.Vec3(0.0, 0.0, BOX_LENGTH_NM) * unit.nanometer
+
+    return a, b, c
+
+
 def turn_off_pbc(system: openmm.System) -> None:
     for index, force in enumerate(system.getForces()):
         if isinstance(force, openmm.NonbondedForce):
             force.setNonbondedMethod(openmm.NonbondedForce.NoCutoff)
-            print(f"Force {index}: NonbondedForce -> NoCutoff")
+            print(f"Nonperiodic system, force {index}: NonbondedForce -> NoCutoff")
+
         elif isinstance(force, openmm.CustomNonbondedForce):
             force.setNonbondedMethod(openmm.CustomNonbondedForce.NoCutoff)
-            print(f"Force {index}: CustomNonbondedForce -> NoCutoff")
+            print(f"Nonperiodic system, force {index}: CustomNonbondedForce -> NoCutoff")
 
-    periodic_forces = [f"{index}:{force.__class__.__name__}" for index, force in enumerate(system.getForces()) if isinstance(force, (openmm.NonbondedForce, openmm.CustomNonbondedForce)) and force.usesPeriodicBoundaryConditions()]
+    periodic_forces = [f"{index}:{force.__class__.__name__}" for index, force in enumerate(system.getForces()) if force.usesPeriodicBoundaryConditions()]
 
     if periodic_forces:
-        raise RuntimeError("Periodic nonbonded forces remain enabled: " + ", ".join(periodic_forces))
+        raise RuntimeError("Periodic forces remain enabled in the nonperiodic system: " + ", ".join(periodic_forces))
 
 
-def build_openmm_system(topology: Topology) -> openmm.System:
-    system = openmm.System()
+def validate_periodic_forces(system: openmm.System) -> None:
+    periodic_nonbonded = []
 
-    for atom in topology.atoms():
-        if atom.name == "O":
-            system.addParticle(15.99943 * unit.amu)
-        elif atom.name in ("H1", "H2"):
-            system.addParticle(1.007947 * unit.amu)
-        else:
-            system.addParticle(0.4 * unit.amu)
+    for index, force in enumerate(system.getForces()):
+        if isinstance(force, openmm.NonbondedForce):
+            method = force.getNonbondedMethod()
+            periodic_nonbonded.append(f"{index}:NonbondedForce(method={int(method)})")
 
-    system = apply_polarizable_water(system, topology)
-    turn_off_pbc(system)
+            if method != openmm.NonbondedForce.PME:
+                raise RuntimeError(f"Force {index} is expected to use PME, but method {int(method)} was found.")
 
-    return system
+        elif isinstance(force, openmm.CustomNonbondedForce):
+            method = force.getNonbondedMethod()
+            periodic_nonbonded.append(f"{index}:CustomNonbondedForce(method={int(method)})")
 
-def build_openmm_topology(n_water: int) -> Topology:
+            if method != openmm.CustomNonbondedForce.CutoffPeriodic:
+                raise RuntimeError(f"Force {index} is expected to use CutoffPeriodic, but method {int(method)} was found.")
+
+    if not periodic_nonbonded:
+        raise RuntimeError("No periodic nonbonded forces were found in the periodic system.")
+
+    if not system.usesPeriodicBoundaryConditions():
+        raise RuntimeError("The periodic OpenMM system does not report periodic boundary conditions.")
+
+    print("Periodic nonbonded forces: " + ", ".join(periodic_nonbonded))
+
+
+def build_openmm_topology(n_water: int, periodic: bool) -> Topology:
     topology = Topology()
     chain = topology.addChain()
 
     for iw in range(n_water):
         residue = topology.addResidue("HOH", chain, id=str(iw + 1))
+
         atom_o = topology.addAtom("O", element.oxygen, residue)
         atom_h1 = topology.addAtom("H1", element.hydrogen, residue)
         atom_h2 = topology.addAtom("H2", element.hydrogen, residue)
+
         topology.addAtom("DO", None, residue)
         topology.addAtom("DH1", None, residue)
         topology.addAtom("DH2", None, residue)
+
         topology.addBond(atom_o, atom_h1)
         topology.addBond(atom_o, atom_h2)
 
+    if periodic:
+        topology.setPeriodicBoxVectors(make_box_vectors())
+
     return topology
+
+
+def build_openmm_system(topology: Topology, periodic: bool) -> openmm.System:
+    system = openmm.System()
+
+    for atom in topology.atoms():
+        if atom.name == "O":
+            system.addParticle(15.99943 * unit.amu)
+
+        elif atom.name in ("H1", "H2"):
+            system.addParticle(1.007947 * unit.amu)
+
+        else:
+            system.addParticle(0.4 * unit.amu)
+
+    system = apply_polarizable_water(system, topology)
+
+    if periodic:
+        system.setDefaultPeriodicBoxVectors(*make_box_vectors())
+        validate_periodic_forces(system)
+
+    else:
+        turn_off_pbc(system)
+
+    return system
+
+
 def select_openmm_platform() -> tuple[openmm.Platform, dict[str, str]]:
-    return openmm.Platform.getPlatformByName("Reference"), {}
+    platform = openmm.Platform.getPlatformByName(OPENMM_PLATFORM)
+    properties: dict[str, str] = {}
+
+    if OPENMM_PLATFORM in ("CUDA", "OpenCL"):
+        properties["Precision"] = "double"
+
+    return platform, properties
 
 
-def calculate_with_openmm(coordinates: torch.Tensor) -> tuple[np.ndarray, np.ndarray, str]:
+def center_cluster_in_box(coordinates_nm: np.ndarray) -> np.ndarray:
+    centered = np.array(coordinates_nm, copy=True)
+
+    center = np.mean(centered, axis=0)
+
+    centered += np.array([BOX_LENGTH_NM / 2.0, BOX_LENGTH_NM / 2.0, BOX_LENGTH_NM / 2.0]) - center
+
+    span = np.ptp(centered, axis=0)
+
+    nearest_image_separation = BOX_LENGTH_NM - np.max(span)
+
+    if nearest_image_separation <= NONBONDED_CUTOFF_NM:
+        raise ValueError(f"The cluster is too large for the {BOX_LENGTH_ANGSTROM:.1f} A box: nearest image separation is only {nearest_image_separation:.6f} nm.")
+
+    return centered
+
+
+def calculate_with_openmm(coordinates: torch.Tensor, periodic: bool) -> tuple[np.ndarray, np.ndarray, str]:
     n_config, n_particles, _ = coordinates.shape
 
     if n_particles % 6 != 0:
         raise ValueError("Optimized coordinates must be ordered as O H H D D D for each water molecule.")
 
-    topology = build_openmm_topology(n_particles // 6)
-    system = build_openmm_system(topology)
+    topology = build_openmm_topology(n_particles // 6, periodic)
+    system = build_openmm_system(topology, periodic)
 
     integrator = openmm.VerletIntegrator(0.001 * unit.picoseconds)
+
     platform, properties = select_openmm_platform()
+
     context = openmm.Context(system, integrator, platform, properties)
+
+    if periodic:
+        context.setPeriodicBoxVectors(*make_box_vectors())
 
     energies = np.zeros(n_config)
     forces = np.zeros((n_config, n_particles, 3))
+
     coordinates_nm = coordinates.detach().cpu().numpy() * 0.1
 
     for iconf in range(n_config):
-        context.setPositions(coordinates_nm[iconf] * unit.nanometer)
+        positions_nm = center_cluster_in_box(coordinates_nm[iconf]) if periodic else coordinates_nm[iconf]
+
+        context.setPositions(positions_nm * unit.nanometer)
+
         state = context.getState(getEnergy=True, getForces=True)
+
         energies[iconf] = state.getPotentialEnergy().value_in_unit(unit.kilojoule_per_mole)
+
         forces[iconf] = state.getForces(asNumpy=True).value_in_unit(unit.kilojoule_per_mole / unit.nanometer)
 
     del context, integrator
@@ -200,69 +295,120 @@ def calculate_with_openmm(coordinates: torch.Tensor) -> tuple[np.ndarray, np.nda
     return energies, forces, platform.getName()
 
 
-def write_energy_comparison(filename: str | Path, torch_energy: np.ndarray, openmm_energy: np.ndarray) -> None:
+def write_energy_comparison(filename: str | Path, torch_energy: np.ndarray, openmm_no_pbc_energy: np.ndarray, openmm_pbc_energy: np.ndarray) -> None:
+    # Each implementation uses its own dimer 1 as the energy reference.
     torch_relative = torch_energy - torch_energy[0]
-    openmm_relative = openmm_energy - openmm_energy[0]
+    openmm_no_pbc_relative = openmm_no_pbc_energy - openmm_no_pbc_energy[0]
+    openmm_pbc_relative = openmm_pbc_energy - openmm_pbc_energy[0]
+
+    no_pbc_difference = openmm_no_pbc_relative - torch_relative
+    pbc_difference = openmm_pbc_relative - torch_relative
 
     with Path(filename).open("w", encoding="utf-8") as handle:
-        handle.write("# Energies are in kJ/mol. Relative energies use configuration 1 as the reference.\n")
-        handle.write("# config  torch_absolute  openmm_absolute  torch_relative  openmm_relative  relative_difference  absolute_difference\n")
+        handle.write(f"# Energies are in kJ/mol. The periodic OpenMM calculation uses a cubic box of {BOX_LENGTH_ANGSTROM:.1f} A.\n")
+
+        handle.write("# Relative energies for each implementation use its own configuration 1 (dimer 1) as the reference.\n")
+
+        handle.write("# config torch_relative openmm_no_pbc_relative openmm_pbc_relative no_pbc_minus_torch pbc_minus_torch\n")
 
         for i in range(len(torch_energy)):
-            handle.write(f"{i + 1:8d}{torch_energy[i]:18.10f}{openmm_energy[i]:18.10f}{torch_relative[i]:18.10f}{openmm_relative[i]:18.10f}{openmm_relative[i] - torch_relative[i]:22.10e}{openmm_energy[i] - torch_energy[i]:22.10e}\n")
+            handle.write(f"{i + 1:8d}{torch_relative[i]:20.10f}{openmm_no_pbc_relative[i]:24.10f}{openmm_pbc_relative[i]:22.10f}{no_pbc_difference[i]:22.10e}{pbc_difference[i]:22.10e}\n")
 
 
-def write_force_comparison(filename: str | Path, torch_force: np.ndarray, openmm_force: np.ndarray) -> None:
+def write_force_comparison(filename: str | Path, torch_force: np.ndarray, openmm_no_pbc_force: np.ndarray, openmm_pbc_force: np.ndarray) -> None:
     names = ["O", "H1", "H2", "DO", "DH1", "DH2"] * (torch_force.shape[1] // 6)
-    difference = openmm_force - torch_force
+
+    # PyTorch forces are the common reference.
+    no_pbc_difference = openmm_no_pbc_force - torch_force
+    pbc_difference = openmm_pbc_force - torch_force
 
     with Path(filename).open("w", encoding="utf-8") as handle:
-        handle.write("# Forces are in kJ/(mol nm). Difference = OpenMM - PyTorch.\n")
-        handle.write("# config particle name torch_fx torch_fy torch_fz openmm_fx openmm_fy openmm_fz diff_fx diff_fy diff_fz\n")
+        handle.write(f"# Forces are in kJ/(mol nm). The periodic OpenMM calculation uses a cubic box of {BOX_LENGTH_ANGSTROM:.1f} A.\n")
+
+        handle.write("# Force differences use PyTorch as the common reference: difference = OpenMM - PyTorch.\n")
+
+        handle.write("# config particle name torch_fx torch_fy torch_fz openmm_no_pbc_fx openmm_no_pbc_fy openmm_no_pbc_fz no_pbc_diff_fx no_pbc_diff_fy no_pbc_diff_fz openmm_pbc_fx openmm_pbc_fy openmm_pbc_fz pbc_diff_fx pbc_diff_fy pbc_diff_fz\n")
 
         for iconf in range(torch_force.shape[0]):
             for iparticle, name in enumerate(names):
                 tf = torch_force[iconf, iparticle]
-                of = openmm_force[iconf, iparticle]
-                df = difference[iconf, iparticle]
-                handle.write(f"{iconf + 1:6d}{iparticle + 1:9d}{name:>7s}{tf[0]:18.10e}{tf[1]:18.10e}{tf[2]:18.10e}{of[0]:18.10e}{of[1]:18.10e}{of[2]:18.10e}{df[0]:18.10e}{df[1]:18.10e}{df[2]:18.10e}\n")
+
+                nf = openmm_no_pbc_force[iconf, iparticle]
+                ndf = no_pbc_difference[iconf, iparticle]
+
+                pf = openmm_pbc_force[iconf, iparticle]
+                pdf = pbc_difference[iconf, iparticle]
+
+                handle.write(f"{iconf + 1:6d}{iparticle + 1:9d}{name:>7s}{tf[0]:18.10e}{tf[1]:18.10e}{tf[2]:18.10e}{nf[0]:22.10e}{nf[1]:22.10e}{nf[2]:22.10e}{ndf[0]:20.10e}{ndf[1]:20.10e}{ndf[2]:20.10e}{pf[0]:20.10e}{pf[1]:20.10e}{pf[2]:20.10e}{pdf[0]:18.10e}{pdf[1]:18.10e}{pdf[2]:18.10e}\n")
 
 
-params = read_force_field_parameters(PARAMETER_FILE)
-qa, comments = read_xyz(INPUT_XYZ)
+def print_force_summary(label: str, difference: np.ndarray) -> None:
+    print(f"\n{label} (kJ/(mol nm))")
 
-print(f"PyTorch device: {DEVICE}")
-print(f"Number of configurations: {qa.shape[0]}")
-print(f"Number of water molecules per configuration: {qa.shape[1] // 3}")
+    for iconf in range(difference.shape[0]):
+        max_abs = np.max(np.abs(difference[iconf]))
+        rms = np.sqrt(np.mean(difference[iconf] ** 2))
 
-optimized_coordinates = optimize_with_torch(qa, params)
+        print(f"Configuration {iconf + 1}: max_abs_difference={max_abs:.10e}, RMS_difference={rms:.10e}")
 
-torch_energy, torch_force = calculate_with_torch(qa, optimized_coordinates, params)
-openmm_energy, openmm_force, platform_name = calculate_with_openmm(optimized_coordinates)
 
-torch_energy_np = torch_energy.detach().cpu().numpy()
-torch_force_np = torch_force.detach().cpu().numpy()
+def main() -> None:
+    params = read_force_field_parameters(PARAMETER_FILE)
 
-write_energy_comparison(ENERGY_OUTPUT, torch_energy_np, openmm_energy)
-write_force_comparison(FORCE_OUTPUT, torch_force_np, openmm_force)
+    qa, comments = read_xyz(INPUT_XYZ)
 
-torch_relative = torch_energy_np - torch_energy_np[0]
-openmm_relative = openmm_energy - openmm_energy[0]
-force_difference = openmm_force - torch_force_np
+    print(f"PyTorch device: {DEVICE}")
+    print(f"Number of configurations: {qa.shape[0]}")
+    print(f"Number of water molecules per configuration: {qa.shape[1] // 3}")
+    print(f"Periodic box length: {BOX_LENGTH_ANGSTROM:.1f} A")
 
-print(f"OpenMM platform: {platform_name}")
-print("\nEnergy comparison relative to configuration 1 (kJ/mol)")
-print("config        PyTorch          OpenMM      OpenMM-PyTorch")
+    optimized_coordinates = optimize_with_torch(qa, params)
 
-for i in range(qa.shape[0]):
-    print(f"{i + 1:6d}{torch_relative[i]:17.10f}{openmm_relative[i]:17.10f}{openmm_relative[i] - torch_relative[i]:20.10e}")
+    torch_energy, torch_force = calculate_with_torch(qa, optimized_coordinates, params)
 
-print("\nForce comparison (kJ/(mol nm))")
+    print("\n--- OpenMM no-PBC calculation ---")
 
-for i in range(qa.shape[0]):
-    max_abs = np.max(np.abs(force_difference[i]))
-    rms = np.sqrt(np.mean(force_difference[i] ** 2))
-    print(f"Configuration {i + 1}: max_abs_difference={max_abs:.10e}, RMS_difference={rms:.10e}")
+    openmm_no_pbc_energy, openmm_no_pbc_force, no_pbc_platform = calculate_with_openmm(optimized_coordinates, periodic=False)
 
-print(f"Energy comparison: {ENERGY_OUTPUT}")
-print(f"Force comparison: {FORCE_OUTPUT}")
+    print("\n--- OpenMM PBC calculation ---")
+
+    openmm_pbc_energy, openmm_pbc_force, pbc_platform = calculate_with_openmm(optimized_coordinates, periodic=True)
+
+    torch_energy_np = torch_energy.detach().cpu().numpy()
+    torch_force_np = torch_force.detach().cpu().numpy()
+
+    write_energy_comparison(ENERGY_OUTPUT, torch_energy_np, openmm_no_pbc_energy, openmm_pbc_energy)
+
+    write_force_comparison(FORCE_OUTPUT, torch_force_np, openmm_no_pbc_force, openmm_pbc_force)
+
+    torch_relative = torch_energy_np - torch_energy_np[0]
+    openmm_no_pbc_relative = openmm_no_pbc_energy - openmm_no_pbc_energy[0]
+    openmm_pbc_relative = openmm_pbc_energy - openmm_pbc_energy[0]
+
+    no_pbc_energy_difference = openmm_no_pbc_relative - torch_relative
+    pbc_energy_difference = openmm_pbc_relative - torch_relative
+
+    no_pbc_force_difference = openmm_no_pbc_force - torch_force_np
+    pbc_force_difference = openmm_pbc_force - torch_force_np
+
+    print(f"OpenMM no-PBC platform: {no_pbc_platform}")
+    print(f"OpenMM PBC platform: {pbc_platform}")
+
+    print("\nRelative-energy comparison using the respective dimer 1 as reference (kJ/mol)")
+
+    print("config        PyTorch    OpenMM(no-PBC)      OpenMM(PBC)    no-PBC-PyTorch      PBC-PyTorch")
+
+    for i in range(qa.shape[0]):
+        print(f"{i + 1:6d}{torch_relative[i]:17.10f}{openmm_no_pbc_relative[i]:20.10f}{openmm_pbc_relative[i]:18.10f}{no_pbc_energy_difference[i]:20.10e}{pbc_energy_difference[i]:18.10e}")
+
+    print_force_summary("OpenMM no-PBC minus PyTorch force", no_pbc_force_difference)
+
+    print_force_summary("OpenMM PBC minus PyTorch force", pbc_force_difference)
+
+    print(f"\nEnergy comparison: {ENERGY_OUTPUT}")
+
+    print(f"Force comparison: {FORCE_OUTPUT}")
+
+
+if __name__ == "__main__":
+    main()

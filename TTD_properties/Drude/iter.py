@@ -22,7 +22,7 @@ def iter(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm):
     using the  gradient descent algorithm instead.
     """
 
-    tiny = 1e-8
+    tiny = 1e-8 # in unit of A
     qmix = 0.3
 
     batch_size = q.shape[0]
