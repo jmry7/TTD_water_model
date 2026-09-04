@@ -242,7 +242,7 @@ def apply_polarizable_water(system, topology):
     thole_corr.addTabulatedFunction("F_thole", thole_table)
     thole_corr.addTabulatedFunction("table_lookup", lookup_table)
     thole_corr.addPerParticleParameter("q")
-    thole_corr.addPerParticleParameter("t")  # 0 为核, 1 为 Drude
+    thole_corr.addPerParticleParameter("t")
 
     for i in range(total_particles):
         thole_corr.addParticle([charges[i], particle_types[i]])
