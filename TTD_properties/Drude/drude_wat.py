@@ -5,8 +5,8 @@ import iter
 import newton
 import nmode
 import init
-import mutipole
-import pole
+import multipole
+import pol
 import distoo
 
 
@@ -199,42 +199,42 @@ def drude_wat(lgrad, lfc, ldip, lpol, lpol2, lquad, lopt, lmode, lg, loo,
         results['fa'] = fa.clone()
 
     if ldip:
-        dip_val, dip_vec = mutipole.dipole(q, chg)
+        dip_val, dip_vec = multipole.dipole(q, chg)
         results['dip'] = (dip_val, dip_vec)
 
     if lquad:
         q_centered = cmtrans.cmtrans(q, w)
-        quad = mutipole.quadrupole(q_centered, chg)
-        octu = mutipole.octupole(q_centered, chg)
-        hexa = mutipole.hexadecapole(q_centered, chg)
+        quad = multipole.quadrupole(q_centered, chg)
+        octu = multipole.octupole(q_centered, chg)
+        hexa = multipole.hexadecapole(q_centered, chg)
         results['quad'] = quad
         results['octu'] = octu
         results['hexa'] = hexa
 
     if lpol:
-        alp = pole.pol(ld, lcd, ldd, q, engpe, f, fcm, chg, b, pd, extfld, extfg)
+        alp = pol.pol(ld, lcd, ldd, q, engpe, f, fcm, chg, b, pd, extfld, extfg)
         results['alp'] = alp
 
     if lpol2:
-        beta, beta3 = pole.pol2(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
+        beta, beta3 = pol.pol2(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
         results['beta'] = beta
 
-        gama = pole.pol3(ld, lcd, ldd, q, engpe, f, fcm, chg, b, pd, extfld, extfg)
+        gama = pol.pol3(ld, lcd, ldd, q, engpe, f, fcm, chg, b, pd, extfld, extfg)
         results['gama'] = gama
 
-        A, A1 = pole.polA(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
+        A, A1 = pol.polA(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
         results['A'] = A;
         results['A1'] = A1
 
-        B, B1 = pole.polB(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
+        B, B1 = pol.polB(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
         results['B'] = B;
         results['B1'] = B1
 
-        C, C1 = pole.polC(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
+        C, C1 = pol.polC(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
         results['C'] = C;
         results['C1'] = C1
 
-        D, D1 = pole.polD(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
+        D, D1 = pol.polD(ld, lcd, ldd, q, chg, b, pd, extfld, extfg, engpe, f, fcm)
         results['D'] = D;
         results['D1'] = D1
 
