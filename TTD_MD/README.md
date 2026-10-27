@@ -1,33 +1,30 @@
-# TTD Polarizable Water Model Molecular Dynamics Program
+# TTD Polarizable Water Model: Molecular Dynamics
 
-This code package implements molecular dynamics simulations for the TTD  water model using OpenMM. The current version has been tested with OpenMM 8.4.
+This package implements molecular dynamics simulations for the TTD
+polarizable water model using OpenMM. The current version has been
+tested with **OpenMM 8.4**.
 
-The program uses a self-consistent-field (SCF) procedure to optimize the Drude-particle positions and a Nosé–Hoover chain thermostat to create an NVT ensemble.
+The package contains separate subdirectories for **NVT** and **NPT**
+simulations. The thermostat and barostat implementations are based on
+the methods described in *Molecular Physics*, **1996**, 87(5),
+1117--1157.
 
-## Files
+## Files and Entry Points
 
-- `main_program.py`
-  Main program for reading the input structure, constructing the simulation system, performing equilibration and production simulations, writing output files, and managing checkpoint/restart operations.
-
-- `drude_ff.py`
-  Force-field module defining the interactions of the TTD water model.
-
-- `nhc_integrators.py`
-  Integrator module implementing the SCF Drude relaxation, velocity-Verlet propagation, and Nosé–Hoover chain thermostat.
-
-- `record.py`
-  Reporter module for writing coordinate and velocity trajectories and monitoring the system temperature.
+-   **NVT simulation:** `NVT/nvt_run.py`
+-   **NPT simulation:** `NPT/npt_run.py`
 
 ## Requirements
 
 The program has been tested with:
 
-- Python 3.11
-- OpenMM 8.4
-- NumPy 2.4.6
-- SciPy 1.17.1
+-   Python 3.11
+-   OpenMM 8.4
+-   NumPy 2.4.6
+-   SciPy 1.17.1
 
-A CUDA-compatible NVIDIA GPU is recommended. The program can also attempt to use OpenCL if CUDA is unavailable.
+An NVIDIA GPU with CUDA support is recommended. If CUDA is unavailable,
+the program can attempt to use OpenCL for GPU acceleration.
 
 ## Input Structure
 
@@ -35,54 +32,71 @@ The main program reads an input structure in PDB format.
 
 Each water molecule must contain six interaction sites:
 
-- `O`
-- `H1`
-- `H2`
-- `DO`
-- `DH1`
-- `DH2`
+-   `O`
+-   `H1`
+-   `H2`
+-   `DO`
+-   `DH1`
+-   `DH2`
 
 The residue name must be `HOH`.
 
-In the initial PDB structure, each Drude particle should overlap with its corresponding core site.
+In the initial PDB structure, each Drude particle should overlap with
+its corresponding core site.
 
-## Running the Program
+**Recommended initial structure:** Unbalanced configurations may trigger
+a polarization catastrophe or cause the SCF procedure to fail to
+converge. We therefore recommend using the provided `water_6p.pdb` file
+as the initial structure. To run multiple trajectories, use
+`extract_last_xyz_to_pdb.py` to generate a new initial PDB file from the
+final frame of a previously generated trajectory.\
+For NPT simulations, because the current force field yields a relatively high 
+equilibrium density, we recommend using a larger initial simulation box and a 
+larger number of water molecules (e.g., the 512 water molecules used in the current setup). 
+Otherwise, the program will raise an error if the box length is less than twice the short-range cutoff distance.
 
-Place the Python modules and the input PDB file in the same directory, and run:
+## Running a Simulation
 
-```bash
-python main_program.py
+``` bash
+python NVT/nvt_run.py
 ```
 
-The input PDB filename and the main simulation parameters can be modified in `main_program.py`.
+or
+
+``` bash
+python NPT/npt_run.py
+```
+
+The input PDB filename and the main simulation parameters can be
+configured in `nvt_run.py` or `npt_run.py`.
 
 ## Checkpoint and Restart
 
-The program supports restarting from checkpoints.
+**NVT simulations support checkpoint/restart.**
 
-The restart information is stored in:
+Restart information is stored in the following files:
 
-- `restart.chk`
-- `restart_meta.json`
+-   `restart.chk`
+-   `restart_meta.json`
 
-If both files are present, the program automatically loads the checkpoint and continues the production simulation from the saved step.
+If both files are present, the program automatically loads the
+checkpoint and resumes the production simulation from the saved step.
 
-To start a completely new simulation, delete both checkpoint files before running the program again.
+To start a completely new simulation, delete both checkpoint files
+before running the program again.
 
 ## Output Files
 
-Depending on the settings in `main_program.py`, the program produces files including:
+Depending on the settings in `nvt_run.py` or `npt_run.py`, the program
+can generate the following files:
 
-- `config.xyz`: coordinate trajectory of all particles, with coordinates recorded in angstroms (Å)
-- `vel.xyz`: velocity trajectory of all particles, with velocities recorded in angstroms per picosecond (Å/ps)
-- `thermo_state.csv`: thermodynamic quantities and SCF iteration counts
-- `md.log`: production simulation log
-- `equil_thermo.csv`: thermodynamic quantities and SCF diagnostics recorded during equilibration.
-- `equil_md.log`: equilibration log
-- `equilibrated_216.pdb`: structure saved after equilibration
-- `restart.chk`: checkpoint
-- `restart_meta.json`: restart metadata
+-   `config.xyz` --- Coordinate trajectory for all particles, with
+    coordinates in ångströms (Å).
+-   `vel.xyz` --- Velocity trajectory for all particles, with velocities
+    in ångströms per picosecond (Å/ps).
+-   `.csv` files --- Thermodynamic quantities and SCF iteration counts.
 
 ## Performance
 
-On a local Windows computer equipped with an NVIDIA GeForce RTX 4070 GPU, the present simulation setup runs at approximately 1.2 ns/day.
+On a local Windows computer equipped with an NVIDIA GeForce RTX 4070
+GPU, the current simulation setup runs at approximately **1.2 ns/day**.
