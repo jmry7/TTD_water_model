@@ -27,3 +27,8 @@ The programs has been tested with:
 - NumPy 2.4.6
 - SciPy 1.17.1
 
+## Citation
+
+If you use this repository in your research, please cite the following publication:
+
+DOI: https://doi.org/10.1021/acs.jctc.6c01886
